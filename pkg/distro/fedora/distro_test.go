@@ -7,11 +7,14 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 
+	"github.com/osbuild/images/internal/common"
 	"github.com/osbuild/images/pkg/blueprint"
 	"github.com/osbuild/images/pkg/distro"
 	"github.com/osbuild/images/pkg/distro/distro_test_common"
 	"github.com/osbuild/images/pkg/distro/fedora"
+	"github.com/osbuild/images/pkg/ostree"
 )
 
 type fedoraFamilyDistro struct {
@@ -501,6 +504,44 @@ func TestDistro_ManifestError(t *testing.T) {
 					assert.NoError(t, err)
 				}
 			})
+		}
+	}
+}
+
+// Check that Manifest() function returns an warning when FIPS
+// customization is enabled and the host is not FIPS
+func TestDistro_ManifestFIPSWarning(t *testing.T) {
+	fedoraDistro := fedora.NewF39()
+	fips_enabled := true
+	msg := common.FIPSEnabledImageWarning + "\n"
+
+	for _, archName := range fedoraDistro.ListArches() {
+		arch, _ := fedoraDistro.GetArch(archName)
+		for _, imgTypeName := range arch.ListImageTypes() {
+			bp := blueprint.Blueprint{
+				Customizations: &blueprint.Customizations{
+					FIPS: &fips_enabled,
+				},
+			}
+
+			imgType, _ := arch.GetImageType(imgTypeName)
+			imgOpts := distro.ImageOptions{
+				Size: imgType.Size(0),
+			}
+			if slices.Contains([]string{"iot-installer", "iot-raw-image", "iot-simplified-installer", "iot-qcow2-image"}, imgType.Name()) {
+				imgOpts.OSTree = &ostree.ImageOptions{URL: "http://localhost/repo"}
+			}
+			if slices.Contains([]string{"iot-simplified-installer"}, imgType.Name()) {
+				bp.Customizations.InstallationDevice = "/dev/dummy"
+			}
+			_, warn, err := imgType.Manifest(&bp, imgOpts, nil, 0)
+			if err != nil {
+				assert.Equal(t, "live-installer", imgTypeName, err)
+				assert.Equal(t, err, fmt.Errorf("unsupported blueprint customizations found for boot ISO image type %q: (allowed: None)", imgTypeName))
+			} else {
+				assert.Equal(t, slices.Contains(warn, msg), !common.IsBuildHostFIPSEnabled(),
+					"FIPS warning not shown for image: imgTypeName='%s', archName='%s', warn='%v'", imgTypeName, archName, warn)
+			}
 		}
 	}
 }

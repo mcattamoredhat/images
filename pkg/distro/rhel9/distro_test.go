@@ -7,12 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/exp/slices"
 
+	"github.com/osbuild/images/internal/common"
 	"github.com/osbuild/images/pkg/arch"
 	"github.com/osbuild/images/pkg/blueprint"
 	"github.com/osbuild/images/pkg/distro"
 	"github.com/osbuild/images/pkg/distro/distro_test_common"
 	"github.com/osbuild/images/pkg/distro/rhel9"
+	"github.com/osbuild/images/pkg/ostree"
 )
 
 type rhelFamilyDistro struct {
@@ -493,6 +496,43 @@ func TestDistro_ManifestError(t *testing.T) {
 				assert.EqualError(t, err, fmt.Sprintf("boot ISO image type \"%s\" requires specifying a URL from which to retrieve the OSTree commit", imgTypeName))
 			} else {
 				assert.NoError(t, err)
+			}
+		}
+	}
+}
+
+// Check that Manifest() function returns an warning when FIPS
+// customization is enabled and the host is not FIPS
+func TestDistro_ManifestFIPSWarning(t *testing.T) {
+	r8distro := rhel9.New()
+	fips_enabled := true
+	msg := common.FIPSEnabledImageWarning + "\n"
+
+	for _, archName := range r8distro.ListArches() {
+		arch, _ := r8distro.GetArch(archName)
+		for _, imgTypeName := range arch.ListImageTypes() {
+			bp := blueprint.Blueprint{
+				Customizations: &blueprint.Customizations{
+					FIPS: &fips_enabled,
+				},
+			}
+			imgType, _ := arch.GetImageType(imgTypeName)
+			imgOpts := distro.ImageOptions{
+				Size: imgType.Size(0),
+			}
+			if slices.Contains([]string{"edge-installer", "edge-raw-image", "edge-ami", "edge-vsphere", "edge-simplified-installer", "edge-qcow2-image"}, imgTypeName) {
+				imgOpts.OSTree = &ostree.ImageOptions{URL: "http://localhost/repo"}
+			}
+			if imgType.Name() == "edge-simplified-installer" {
+				bp.Customizations.InstallationDevice = "/dev/dummy"
+			}
+			_, warn, err := imgType.Manifest(&bp, imgOpts, nil, 0)
+			if err != nil {
+				assert.True(t, slices.Contains([]string{"azure-eap7-rhui"}, imgTypeName))
+				assert.Equal(t, err, fmt.Errorf("image type %q does not support customizations", imgTypeName))
+			} else {
+				assert.Equal(t, slices.Contains(warn, msg), !common.IsBuildHostFIPSEnabled(),
+					"FIPS warning not shown for image: imgTypeName='%s', archName='%s', warn='%v'", imgTypeName, archName, warn)
 			}
 		}
 	}
